@@ -1,0 +1,13 @@
+Package: genplot
+Maintainer: Who to complain to <yourfault@somewhere.net>
+Author: nk5
+Version: 1.0
+License: GPL-3
+Title: 
+Description: 
+Suggests:
+    testthat,
+    roxygen2
+Collate:
+    'genplot-package.r'
+    'genplot.R'
