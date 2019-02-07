@@ -92,9 +92,9 @@ function(x,r){
 # GRCh38 "/nfs/users/nfs_n/nk5/s109/Gencode/gencode.v24.annotation.gtf.sorted.gz"
 
 genplot <-
-function (x, y=NULL, chr=NULL, GTF="/nfs/users/nfs_n/nk5/s117/Gencode/gencode.v19.annotation.gtf.sorted.gz", MaxNTranscripts=0, GeneID=NULL, gname="all", biotype="all", LabGene=T, BED=list("/nfs/users/nfs_n/nk5/s117/ATAC100/Peaks/Peak10M/peaksForPlot.gz", "/nfs/users/nfs_n/nk5/s117/Encode/Segmentations/segway.forPlot.gz"), xlim=NULL, ylim=NULL, ...)
+function (x, y=NULL, chr=NULL, GTF="/nfs/users/nfs_n/nk5/s117/Gencode/gencode.v24.annotation.gtf.sorted.gz", MaxNTranscripts=0, GeneID=NULL, gname="all", biotype="all", LabGene=T, BED=NULL, xlim=NULL, ylim=NULL, ...)
 {
-    
+    #BED=list("/nfs/users/nfs_n/nk5/s117/ATAC100/Peaks/Peak10M/peaksForPlot.gz", "/nfs/users/nfs_n/nk5/s117/Encode/Segmentations/segway.forPlot.gz")
     colAnnot=c(rgb(92,147,189,max=255),rgb(165,56,108,max=255), rgb(103,118,35,max=255), rgb(92,147,189,max=255), "#1B9E77","#7570B3","#D95F02","#E7298A","#66A61E","#E6AB02","#A6761D","#E41A1C","#377EB8","#4DAF4A","#984EA3","#FF7F00","#FFFF33","#A65628","#F781BF","#666666", "#F17ABF", "#32A077", "#776CB2", "#166F2D", "#741D82", "#7B240B", "#BF007E", "#4F72B3")
     colAnnot=c("#f9a851","#b8b8b9","#925c9e","#e55f53","#0aaa87","#00aee0","#fcd804","#002d6d","#ac193c","#cdc3ba","#93bfe9","#555559")
     
@@ -210,7 +210,7 @@ function (x, y=NULL, chr=NULL, GTF="/nfs/users/nfs_n/nk5/s117/Gencode/gencode.v1
     }
     axis(1, at = xl, lab = Tick.label(xl/tpr), line=bottomline, tick=F)
     mtext(paste("Chromosome ", gsub("chr", "", as.character(chr)), " position (", Unit, ")", sep = ""), 1, bottomline+1.5, cex=1)
-    par(xpd=NA);clip(xlim[1], xlim[2], bottom,yNmax*NT*1.05)
+    par(xpd=NA);clip(xlim[1], xlim[2], bottom,yNmax*NT*1.05) #1.05)
     axis(1, at = xl, lab = F, line=bottomline)
     segments(xlim[1],bottom,xlim[2],bottom)
     
@@ -276,7 +276,7 @@ function (x, y=NULL, chr=NULL, GTF="/nfs/users/nfs_n/nk5/s117/Gencode/gencode.v1
             text(x0-arrowlen/2,y0+gwidth*0.8,nlab,pos=4,cex=1.0,col=gcol.text)
         }}
     }
-    clip(xlim[1]-diff(xlim), xlim[2]*2, bottom-diff(ylim),yNmax*NT*2.05)
+    clip(xlim[1]-diff(xlim), xlim[2]+diff(xlim), bottom,yNmax*NT*1.05+diff(ylim))
     
     invisible(gtf)
 }

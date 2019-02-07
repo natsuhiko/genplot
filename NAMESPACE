@@ -1,2 +1,4 @@
 useDynLib(genplot)
 export(genplot)
+export(qtlboxplot)
+export(rsqplot)

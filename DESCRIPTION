@@ -1,13 +1,17 @@
 Package: genplot
-Maintainer: Who to complain to <yourfault@somewhere.net>
+Maintainer: Natsuhiko Kumasaka <nk5@sanger.ac.uk>
 Author: nk5
 Version: 1.0
 License: GPL-3
-Title: 
-Description: 
+Title: Plot with gene annotations
+Description: Plot with gene annotations
 Suggests:
     testthat,
     roxygen2
 Collate:
     'genplot-package.r'
     'genplot.R'
+    'rsqplot.R'
+    'imax.R'
+    'qtlboxplot.R'
+    'col.ba.R'
