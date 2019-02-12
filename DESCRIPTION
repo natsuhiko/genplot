@@ -14,4 +14,5 @@ Collate:
     'rsqplot.R'
     'imax.R'
     'qtlboxplot.R'
+    'covplot.R'
     'col.ba.R'
