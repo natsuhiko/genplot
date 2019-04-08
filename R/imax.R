@@ -1,2 +1,2 @@
 imax <-
-function(x){seq(length(x))[x==max(x,na.rm=T)][1]}
+function(x){seq(length(x))[x%in%max(x,na.rm=T)][1]}

@@ -12,6 +12,7 @@ Collate:
     'genplot-package.r'
     'genplot.R'
     'rsqplot.R'
+    'arplot.R'
     'imax.R'
     'qtlboxplot.R'
     'covplot.R'
