@@ -130,7 +130,7 @@ function (x, y=NULL, chr=NULL, GTF="/nfs/users/nfs_n/nk5/s117/Gencode/gencode.v2
     # GTF filtering
     reg = paste(chr, ":", floor(xlim[1]), "-", ceiling(xlim[2]), sep = "")
     gtf = as.data.frame(as.list(.Call("loadGTF", as.character(GTF), reg)), stringsAsFactors=F)
-    gtf = as.data.frame(as.list(.Call("loadGTF", as.character(GTF), as.character(gsub("chr","",reg)))), stringsAsFactors=F)
+    gtf = rbind(gtf, as.data.frame(as.list(.Call("loadGTF", as.character(GTF), as.character(gsub("chr","",reg)))), stringsAsFactors=F))
     if(!is.null(gtf)&length(gtf)>0){
         names(gtf)=c("gid", "tid", "start", "end", "strand", "source", "type","gname","biotype")
         if(biotype!="all"){gtf=gtf[gtf$biotype%in%biotype,]}
