@@ -136,7 +136,7 @@ SEXP loadGTF(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfsta
     
     while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
         //if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
-        
+//fprintf(stderr, "%s\n", str.s); 
         sscanf(str.s, "%[^\t]\t%[^\t]\t%[^\t]\t%d\t%d\t%[^\t]\t%[^\t]\t%[^\t]\t%n", chr, source, ftype, &fstart, &fend, score, strand, phase, &nchar);
         attrib = str.s+nchar;
         
@@ -206,12 +206,15 @@ SEXP loadGTF(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfsta
     int l=0;
     while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
         //if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
-        
+        if(verbose>0){fprintf(stderr, "%s\n", str.s);}
         sscanf(str.s, "%[^\t]\t%[^\t]\t%[^\t]\t%d\t%d\t%[^\t]\t%[^\t]\t%[^\t]\t%n", chr, source, ftype, &fstart, &fend, score, strand, phase, &nchar);
         attrib = str.s+nchar;
         if(strcmp(ftype, "exon")==0 || strcmp(ftype, "CDS")==0 || strcmp(ftype, "UTR")==0){
             //puts(str.s);
             parseAttrib(attrib, &attr);
+            if(verbose>0){fprintf(stderr, "attrib parsed\n");}
+            if(verbose>0){fprintf(stderr, "%s %s %d %d %s", source, ftype, fstart, fend, strand);}
+            if(verbose>0){fprintf(stderr, "%s %s %s %s", attr.gene_id, attr.gene_name, attr.transcript_id, attr.transcript_type);}
             SET_STRING_ELT(Rsources, l, mkChar(source));
             SET_STRING_ELT(Rftypes,  l, mkChar(ftype));
             INTEGER(Rfstarts)[l] = fstart;
@@ -220,8 +223,11 @@ SEXP loadGTF(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfsta
             SET_STRING_ELT(Rgids,    l, mkChar(attr.gene_id));
             SET_STRING_ELT(Rgnames,  l, mkChar(attr.gene_name));
             SET_STRING_ELT(Rtids,    l, mkChar(attr.transcript_id));
-            SET_STRING_ELT(Rbtypes,  l, mkChar(attr.transcript_type));
-            
+            if(attr.transcript_type==NULL){
+                SET_STRING_ELT(Rbtypes,  l, mkChar(""));
+            }else{
+                SET_STRING_ELT(Rbtypes,  l, mkChar(attr.transcript_type));
+            }
             /*sources[l] = (char*)calloc(strlen(source), sizeof(char)); strcpy(sources[l], source);
             ftypes[l]  = (char*)calloc(strlen(ftype), sizeof(char)); strcpy(ftypes[l], ftype);
             
@@ -367,6 +373,102 @@ SEXP loadBed(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfsta
 
 
 
+
+
+
+
+SEXP tabix2charmat(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfstarts, SEXP Rfends, SEXP Rstrands, SEXP Rgids, SEXP Rgnames, SEXP Rtids, SEXP Rbtypes){
+    
+    Rfname = coerceVector(Rfname, STRSXP);
+    Rreg   = coerceVector(Rreg,   STRSXP);
+    
+    const char* fname; fname = CHAR(STRING_ELT(Rfname, 0));
+    const char* reg;   reg   = CHAR(STRING_ELT(Rreg, 0));
+    
+    verbose=0;
+    
+    char* regchr; regchr=(char*)calloc(1000, sizeof(char));
+    int regstart, regend;
+    sscanf(reg, "%[^:]:%d-%d", regchr, &regstart, &regend);
+    if(verbose>0){ fprintf(stderr, "Reg=%s\n", reg); }
+    int i, k;
+    htsFile *fp = hts_open(fname,"r");
+    if ( !fp ) fprintf(stderr, "Could not read tabixed file %s\n", fname);
+    
+    char *fnidx = calloc(strlen(fname) + 5, 1);
+    strcat(strcpy(fnidx, fname), ".tbi");
+    
+    tbx_t *tbx = tbx_index_load(fnidx);
+    if ( !tbx ) fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
+    
+    kstring_t str = {0,0,0};
+    
+    hts_itr_t *itr = tbx_itr_querys(tbx, reg);
+    
+    char* attrib; //attrib=(char*)calloc(1000, sizeof(char));
+    int nchar, nchar1;
+    int nfeature=0; // n of rows
+    
+    int ncol=0; // n of extra columns in the bed file
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
+        attrib = str.s;
+        // count ncol
+        if(nfeature==0){
+            for(k=0; k<strlen(attrib); k++){if(attrib[k]=='\t'){ncol++;}}
+        }
+        nfeature++;
+    }
+    tbx_itr_destroy(itr);
+    
+    if(verbose>0){fprintf(stderr, "\nDim = %d x %d\n\n", nfeature, ncol+1);}
+    
+    if(nfeature==0){return R_NilValue;}
+    
+    // #
+    // #  load bed
+    // #
+    SEXP Raddcol  = PROTECT(allocVector(STRSXP, nfeature*(ncol+1)));
+    SEXP Rdim     = PROTECT(allocVector(INTSXP, 2));
+    INTEGER(Rdim)[0] = nfeature;
+    INTEGER(Rdim)[1] = ncol+1;
+    
+    itr = tbx_itr_querys(tbx, reg);
+    
+    int l=0;
+    char* val; val=(char*)calloc(100000, sizeof(char));
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
+        nchar=0;
+        //fprintf(stderr, "%s\n", str.s);
+        for(i=0; i<ncol; i++){
+            // bug fixed
+            if(str.s[nchar]=='\t'){
+                 nchar1=1;
+                 val[0]='\0';
+            }else{
+                 sscanf(str.s+nchar, "%[^\t]%*1[\t]%n", val, &nchar1);
+            }
+            if(verbose>0){fprintf(stderr, "%d [%s] len=%d pos=%d\n", i, val, nchar1, nchar);}
+            SET_STRING_ELT(Raddcol, l, mkChar(val));
+            nchar += nchar1;
+            l++;
+        }
+        if(str.s[nchar]=='\n'||str.s[nchar]=='\0'){
+            nchar1=1;
+            val[0]='\0';
+        }else{
+            sscanf(str.s+nchar, "%[^\n]\n%n", val, &nchar);
+        }
+        SET_STRING_ELT(Raddcol, l, mkChar(val));
+        l++;
+    }
+    UNPROTECT(2);
+    
+    if(ncol>0){
+        //return CONS(Rdim, R_NilValue);
+        return CONS(Rdim, CONS(Raddcol, R_NilValue));
+    }
+    return R_NilValue;
+}
 
 
 

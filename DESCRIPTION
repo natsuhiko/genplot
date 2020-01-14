@@ -17,3 +17,4 @@ Collate:
     'qtlboxplot.R'
     'covplot.R'
     'col.ba.R'
+    'tabix2charmat.R'
