@@ -1,186 +1,262 @@
 #include "loadGTF.h"
 
-
-
-
 /*
-int main0(int argc, char** argv){
-    char** sources;
-    char** ftypes;
-    int* fstarts;
-    int* fends;
-    int* strands;
-    char** gids;
-    char** gnames;
-    char** tids;
-    char** btypes;
-    loadGTF(&(argv[1]), &(argv[2]), sources, ftypes, fstarts, fends, strands, gids, gnames, tids, btypes);
-    return 0;
+ * Safer R/.Call interface for tabix-backed GTF/BED readers.
+ *
+ * Main fixes relative to the original code:
+ *   - Protect coerced R arguments.
+ *   - Check hts_open(), tbx_index_load(), and tbx_itr_querys().
+ *   - Handle regions containing no gene records.
+ *   - Never call mkChar(NULL); missing GTF attributes become NA.
+ *   - Keep output objects protected until the result pairlist is complete.
+ *   - Do not free pointers that point inside kstring_t::s.
+ *   - Bound sscanf() string fields to avoid buffer overflow.
+ *   - Release htslib/kstring resources before returning.
+ */
+
+static SEXP mkCharOrNA(const char *s)
+{
+    return s == NULL ? NA_STRING : mkChar(s);
 }
-*/
 
-
-int parseAttrib(char* sattr, GTFATTRIB* attr){
+int parseAttrib(char *sattr, GTFATTRIB *attr)
+{
     int i;
-    int flag=0;
-    int flag_double_quote=0;
-    char* key;
-    char* val;
-    int n = strlen(sattr);
-    attr->gene_id = attr->transcript_id = attr->gene_type = attr->gene_status = attr->gene_name = attr->transcript_type = attr->transcript_status = attr->transcript_name = attr->exon_id = NULL;
-    attr->exon_number = attr->level = -1;
-    for(i=0; i<n; i++){
-        //fprintf(stderr, "%d", flag);
-        if(flag==0 && sattr[i]!=' ' && sattr[i]!='\"' && sattr[i]!=';'){
-            key  = sattr+i;
+    int flag = 0;
+    char *key = NULL;
+    char *val = NULL;
+    int n;
+
+    if (attr == NULL) return -1;
+
+    attr->gene_id = NULL;
+    attr->transcript_id = NULL;
+    attr->gene_type = NULL;
+    attr->gene_status = NULL;
+    attr->gene_name = NULL;
+    attr->transcript_type = NULL;
+    attr->transcript_status = NULL;
+    attr->transcript_name = NULL;
+    attr->exon_id = NULL;
+    attr->exon_number = -1;
+    attr->level = -1;
+
+    if (sattr == NULL) return 0;
+
+    n = (int)strlen(sattr);
+
+    for (i = 0; i < n; i++) {
+        if (flag == 0 && sattr[i] != ' ' && sattr[i] != '\t' &&
+            sattr[i] != '"' && sattr[i] != ';') {
+            key = sattr + i;
             flag = 1;
         }
-        if(flag==2 && sattr[i]!=' ' && sattr[i]!='\"'){
-            if(sattr[i]!='\"'){flag_double_quote=1;}
-            val  = sattr+i;
+
+        if (flag == 2 && sattr[i] != ' ' && sattr[i] != '\t' && sattr[i] != '"') {
+            val = sattr + i;
             flag = 3;
         }
-        if(flag==1 && sattr[i]==' '){
+
+        if (flag == 1 && (sattr[i] == ' ' || sattr[i] == '\t')) {
             sattr[i] = '\0';
-            //fprintf(stderr, "%s\n", key);
-            flag=2;
+            flag = 2;
         }
-        if(flag==3 && (sattr[i]=='\"' || sattr[i]==';')){
+
+        if (flag == 3 && (sattr[i] == '"' || sattr[i] == ';')) {
             sattr[i] = '\0';
-            if(strcmp(key, "gene_id")==0){
-                attr->gene_id = val;
-            }else if(strcmp(key, "transcript_id")==0 ){
-                attr->transcript_id = val;
-            }else if(strcmp(key, "gene_type")==0 ){
-                attr->gene_type = val;
-            }else if(strcmp(key, "gene_status")==0 ){
-                attr->gene_status = val;
-            }else if(strcmp(key, "gene_name")==0 ){
-                attr->gene_name = val;
-            }else if(strcmp(key, "transcript_type")==0 ){
-                attr->transcript_type = val;
-            }else if(strcmp(key, "transcript_status")==0 ){
-                attr->transcript_status = val;
-            }else if(strcmp(key, "transcript_name")==0 ){
-                attr->transcript_name = val;
-            }else if(strcmp(key, "exon_number")==0 ){
-                attr->exon_number = atoi(val);
-            }else if(strcmp(key, "exon_id")==0 ){
-                attr->exon_id = val;
-            }else if(strcmp(key, "level")==0 ){
-                attr->level = atoi(val);
+
+            if (key != NULL && val != NULL) {
+                if (strcmp(key, "gene_id") == 0) {
+                    attr->gene_id = val;
+                } else if (strcmp(key, "transcript_id") == 0) {
+                    attr->transcript_id = val;
+                } else if (strcmp(key, "gene_type") == 0) {
+                    attr->gene_type = val;
+                } else if (strcmp(key, "gene_status") == 0) {
+                    attr->gene_status = val;
+                } else if (strcmp(key, "gene_name") == 0) {
+                    attr->gene_name = val;
+                } else if (strcmp(key, "gene_biotype") == 0) {
+                    attr->transcript_type = val;
+                } else if (strcmp(key, "transcript_type") == 0) {
+                    attr->transcript_type = val;
+                } else if (strcmp(key, "transcript_status") == 0) {
+                    attr->transcript_status = val;
+                } else if (strcmp(key, "transcript_name") == 0) {
+                    attr->transcript_name = val;
+                } else if (strcmp(key, "exon_number") == 0) {
+                    attr->exon_number = atoi(val);
+                } else if (strcmp(key, "exon_id") == 0) {
+                    attr->exon_id = val;
+                } else if (strcmp(key, "level") == 0) {
+                    attr->level = atoi(val);
+                }
             }
-            //fprintf(stderr, "%s=%s\n", key, val);
-            flag=0;
+
+            key = NULL;
+            val = NULL;
+            flag = 0;
         }
     }
+
     return 0;
 }
 
-// vcf : tabixed fragment file
-// hid is shifted for sample i
-SEXP loadGTF(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfstarts, SEXP Rfends, SEXP Rstrands, SEXP Rgids, SEXP Rgnames, SEXP Rtids, SEXP Rbtypes){
-    
-    Rfname = coerceVector(Rfname, STRSXP);
-    Rreg   = coerceVector(Rreg,   STRSXP);
-    
-    const char* fname; fname = CHAR(STRING_ELT(Rfname, 0));
-    const char* reg;   reg   = CHAR(STRING_ELT(Rreg, 0));
-    
-    verbose=0;
-    
-    char* regchr; regchr=(char*)calloc(1000, sizeof(char));
-    int regstart, regend;
-    sscanf(reg, "%[^:]:%d-%d", regchr, &regstart, &regend);
-    
-    //fprintf(stderr, "%s %d %d", regchr, regstart, regend);
-    
-    //return 0;
-    
-    int i;
-    htsFile *fp = hts_open(fname,"r");
-    if ( !fp ) fprintf(stderr, "Could not read tabixed file %s\n", fname);
-    //enum htsExactFormat format = hts_get_format(fp)->format;
-    
-    char *fnidx = calloc(strlen(fname) + 5, 1);
-    strcat(strcpy(fnidx, fname), ".tbi");
-    
-    //regidx_t *reg_idx = NULL;
-    
-    tbx_t *tbx = tbx_index_load(fnidx);
-    if ( !tbx ) fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
-    
-    kstring_t str = {0,0,0};
 
-    //int nseq;
-    //const char **seq = NULL;
-    //if ( reg_idx ) seq = tbx_seqnames(tbx, &nseq);
-    
+SEXP loadGTF(SEXP Rfname, SEXP Rreg)
+{
+    SEXP fnameS = PROTECT(coerceVector(Rfname, STRSXP));
+    SEXP regS   = PROTECT(coerceVector(Rreg, STRSXP));
+
+    if (XLENGTH(fnameS) < 1 || XLENGTH(regS) < 1 ||
+        STRING_ELT(fnameS, 0) == NA_STRING || STRING_ELT(regS, 0) == NA_STRING) {
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    const char *fname = CHAR(STRING_ELT(fnameS, 0));
+    const char *reg   = CHAR(STRING_ELT(regS, 0));
+
+    verbose = 0;
+
+    char regchr[1000];
+    int regstart = 0, regend = 0;
+    if (sscanf(reg, "%999[^:]:%d-%d", regchr, &regstart, &regend) != 3) {
+        fprintf(stderr, "Invalid region: %s\n", reg);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    htsFile *fp = hts_open(fname, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "Could not read tabixed file %s\n", fname);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    size_t fnidx_len = strlen(fname) + 5;
+    char *fnidx = (char *)calloc(fnidx_len, 1);
+    if (fnidx == NULL) {
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+    snprintf(fnidx, fnidx_len, "%s.tbi", fname);
+
+    tbx_t *tbx = tbx_index_load(fnidx);
+    if (tbx == NULL) {
+        fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    kstring_t str = {0, 0, NULL};
     hts_itr_t *itr = tbx_itr_querys(tbx, reg);
-    
-    
-    int gstart=270000000, gend=0;
-    char* chr;    chr   =(char*)calloc(1000, sizeof(char));
-    char* source; source=(char*)calloc(1000, sizeof(char));
-    char* ftype;  ftype =(char*)calloc(1000, sizeof(char));
-    int fstart;
-    int fend;
-    char* score;  score =(char*)calloc(1000, sizeof(char));
-    char* strand; strand=(char*)calloc(1000, sizeof(char));
-    char* phase;  phase =(char*)calloc(1000, sizeof(char));
-    char* attrib; attrib=(char*)calloc(1000, sizeof(char));
-    int nchar;
-    int ngene=0;
-    int nfeature=0;
-    
-    
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        //if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
-//fprintf(stderr, "%s\n", str.s); 
-        sscanf(str.s, "%[^\t]\t%[^\t]\t%[^\t]\t%d\t%d\t%[^\t]\t%[^\t]\t%[^\t]\t%n", chr, source, ftype, &fstart, &fend, score, strand, phase, &nchar);
-        attrib = str.s+nchar;
-        
-        nfeature++;
-        if(strcmp(ftype, "gene")==0){
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for region %s\n", reg);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    int gstart = 0;
+    int gend = 0;
+    int ngene = 0;
+
+    char chr[1000];
+    char source[1000];
+    char ftype[1000];
+    char score[1000];
+    char strand[1000];
+    char phase[1000];
+    int fstart = 0, fend = 0, nchar = 0;
+
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        int nr = sscanf(str.s,
+                        "%999[^\t]\t%999[^\t]\t%999[^\t]\t%d\t%d\t%999[^\t]\t%999[^\t]\t%999[^\t]\t%n",
+                        chr, source, ftype, &fstart, &fend,
+                        score, strand, phase, &nchar);
+        if (nr != 8) continue;
+
+        if (strcmp(ftype, "gene") == 0) {
+            if (ngene == 0) {
+                gstart = fstart;
+                gend = fend;
+            } else {
+                if (fstart < gstart) gstart = fstart;
+                if (fend > gend) gend = fend;
+            }
             ngene++;
-            if(fstart<gstart){gstart=fstart;}
-            if(fend  >gend  ){gend  =fend;  }
-            if(verbose>1)puts(str.s);
         }
     }
     tbx_itr_destroy(itr);
-    
-    char* reg2; reg2 = calloc(1000, sizeof(char));
-    sprintf(reg2, "%s:%d-%d", regchr, gstart, gend);
-    
-    if(verbose>0){fprintf(stderr, "\nExpanded region: %s\n\n", reg2);}
-    
-    
-    // #
-    // #  counting exon/UTR/CDS in region specified by genes overlapping with initial region
-    // #
+    itr = NULL;
+
+    if (ngene == 0) {
+        if (verbose > 0) fprintf(stderr, "No gene overlaps region %s\n", reg);
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    char reg2[1200];
+    int nw = snprintf(reg2, sizeof(reg2), "%s:%d-%d", regchr, gstart, gend);
+    if (nw < 0 || nw >= (int)sizeof(reg2)) {
+        fprintf(stderr, "Expanded region is too long\n");
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    if (verbose > 0) fprintf(stderr, "Expanded region: %s\n", reg2);
+
+    /* Count exon/CDS/UTR records. */
     itr = tbx_itr_querys(tbx, reg2);
-    nfeature=0;
-    GTFATTRIB attr;
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        //if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
-        
-        sscanf(str.s, "%[^\t]\t%[^\t]\t%[^\t]\t%d\t%d\t%[^\t]\t%[^\t]\t%[^\t]\t%n", chr, source, ftype, &fstart, &fend, score, strand, phase, &nchar);
-        attrib = str.s+nchar;
-        if(strcmp(ftype, "exon")==0 || strcmp(ftype, "CDS")==0 || strcmp(ftype, "UTR")==0){
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for expanded region %s\n", reg2);
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    int nfeature = 0;
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        int nr = sscanf(str.s,
+                        "%999[^\t]\t%999[^\t]\t%999[^\t]\t%d\t%d\t%999[^\t]\t%999[^\t]\t%999[^\t]\t%n",
+                        chr, source, ftype, &fstart, &fend,
+                        score, strand, phase, &nchar);
+        if (nr != 8) continue;
+
+        if (strcmp(ftype, "exon") == 0 || strcmp(ftype, "CDS") == 0 || strcmp(ftype, "UTR") == 0)
             nfeature++;
-        }
     }
     tbx_itr_destroy(itr);
-    
-    
-    if(verbose>0){fprintf(stderr, "\nN of features = %d\n\n", nfeature);}
-    
-    if(nfeature==0){return R_NilValue;}
-    
-    // #
-    // #  load gtf in region specified by genes overlapping with initial region
-    // #
+    itr = NULL;
+
+    if (verbose > 0) fprintf(stderr, "N of features = %d\n", nfeature);
+
+    if (nfeature == 0) {
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
     SEXP Rsources = PROTECT(allocVector(STRSXP, nfeature));
     SEXP Rftypes  = PROTECT(allocVector(STRSXP, nfeature));
     SEXP Rfstarts = PROTECT(allocVector(INTSXP, nfeature));
@@ -190,305 +266,354 @@ SEXP loadGTF(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfsta
     SEXP Rgnames  = PROTECT(allocVector(STRSXP, nfeature));
     SEXP Rtids    = PROTECT(allocVector(STRSXP, nfeature));
     SEXP Rbtypes  = PROTECT(allocVector(STRSXP, nfeature));
-    
-    //return R_NilValue;
-    /*char** sources = (char**)calloc(nfeature, sizeof(char*));
-    char** ftypes  = (char**)calloc(nfeature, sizeof(char*));
-    int*   fstarts = (int*)calloc(nfeature, sizeof(int));
-    int*   fends   = (int*)calloc(nfeature, sizeof(int));
-    int*   strands = (int*)calloc(nfeature, sizeof(int));
-    char** gids    = (char**)calloc(nfeature, sizeof(char*));
-    char** gnames  = (char**)calloc(nfeature, sizeof(char*));
-    char** tids    = (char**)calloc(nfeature, sizeof(char*));
-    char** btypes  = (char**)calloc(nfeature, sizeof(char*));*/
+
     itr = tbx_itr_querys(tbx, reg2);
-    
-    int l=0;
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        //if ( reg_idx && !regidx_overlap(reg_idx,seq[itr->curr_tid],itr->curr_beg,itr->curr_end, NULL) ) continue;
-        if(verbose>0){fprintf(stderr, "%s\n", str.s);}
-        sscanf(str.s, "%[^\t]\t%[^\t]\t%[^\t]\t%d\t%d\t%[^\t]\t%[^\t]\t%[^\t]\t%n", chr, source, ftype, &fstart, &fend, score, strand, phase, &nchar);
-        attrib = str.s+nchar;
-        if(strcmp(ftype, "exon")==0 || strcmp(ftype, "CDS")==0 || strcmp(ftype, "UTR")==0){
-            //puts(str.s);
-            parseAttrib(attrib, &attr);
-            if(verbose>0){fprintf(stderr, "attrib parsed\n");}
-            if(verbose>0){fprintf(stderr, "%s %s %d %d %s", source, ftype, fstart, fend, strand);}
-            if(verbose>0){fprintf(stderr, "%s %s %s %s", attr.gene_id, attr.gene_name, attr.transcript_id, attr.transcript_type);}
-            SET_STRING_ELT(Rsources, l, mkChar(source));
-            SET_STRING_ELT(Rftypes,  l, mkChar(ftype));
-            INTEGER(Rfstarts)[l] = fstart;
-            INTEGER(Rfends)[l]   = fend;
-            INTEGER(Rstrands)[l] = strcmp(strand, "+")==0 ? 0 : 1;
-            SET_STRING_ELT(Rgids,    l, mkChar(attr.gene_id));
-            SET_STRING_ELT(Rgnames,  l, mkChar(attr.gene_name));
-            SET_STRING_ELT(Rtids,    l, mkChar(attr.transcript_id));
-            if(attr.transcript_type==NULL){
-                SET_STRING_ELT(Rbtypes,  l, mkChar(""));
-            }else{
-                SET_STRING_ELT(Rbtypes,  l, mkChar(attr.transcript_type));
-            }
-            /*sources[l] = (char*)calloc(strlen(source), sizeof(char)); strcpy(sources[l], source);
-            ftypes[l]  = (char*)calloc(strlen(ftype), sizeof(char)); strcpy(ftypes[l], ftype);
-            
-            fstarts[l] = fstart;
-            fends[l]   = fend;
-            strands[l] = strcmp(strand, "+")==0 ? 0 : 1;
-            
-            gids[l]    = (char*)calloc(strlen(attr.gene_id), sizeof(char)); strcpy(gids[l], attr.gene_id);
-            gnames[l]  = (char*)calloc(strlen(attr.gene_name), sizeof(char)); strcpy(gnames[l], attr.gene_name);
-            tids[l]    = (char*)calloc(strlen(attr.transcript_id), sizeof(char)); strcpy(tids[l], attr.transcript_id);
-            btypes[l]  = (char*)calloc(strlen(attr.transcript_type), sizeof(char)); strcpy(btypes[l], attr.transcript_type);*/
-            l++;
-        }
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for expanded region %s\n", reg2);
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(11); /* 9 outputs + 2 inputs */
+        return R_NilValue;
     }
-    
-    UNPROTECT(9);
-    
-    return CONS(Rgids, CONS(Rtids, CONS(Rfstarts, CONS(Rfends, CONS(Rstrands, CONS(Rsources, CONS(Rftypes, CONS(Rgnames, CONS(Rbtypes, R_NilValue)))))))));
-    
-    
+
+    int l = 0;
+    GTFATTRIB attr;
+
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        int nr = sscanf(str.s,
+                        "%999[^\t]\t%999[^\t]\t%999[^\t]\t%d\t%d\t%999[^\t]\t%999[^\t]\t%999[^\t]\t%n",
+                        chr, source, ftype, &fstart, &fend,
+                        score, strand, phase, &nchar);
+        if (nr != 8) continue;
+
+        if (strcmp(ftype, "exon") != 0 && strcmp(ftype, "CDS") != 0 && strcmp(ftype, "UTR") != 0)
+            continue;
+
+        if (l >= nfeature) {
+            fprintf(stderr, "Internal error: more features encountered than counted\n");
+            break;
+        }
+
+        char *attrib = str.s + nchar;  /* points inside str.s: never free separately */
+        parseAttrib(attrib, &attr);
+
+        if (verbose > 0) {
+            fprintf(stderr, "%s %s %d %d %s | gene_id=%s gene_name=%s transcript_id=%s transcript_type=%s\n",
+                    source, ftype, fstart, fend, strand,
+                    attr.gene_id ? attr.gene_id : "NULL",
+                    attr.gene_name ? attr.gene_name : "NULL",
+                    attr.transcript_id ? attr.transcript_id : "NULL",
+                    attr.transcript_type ? attr.transcript_type : "NULL");
+        }
+
+        SET_STRING_ELT(Rsources, l, mkChar(source));
+        SET_STRING_ELT(Rftypes,  l, mkChar(ftype));
+        INTEGER(Rfstarts)[l] = fstart;
+        INTEGER(Rfends)[l]   = fend;
+        INTEGER(Rstrands)[l] = strcmp(strand, "+") == 0 ? 0 : 1;
+        SET_STRING_ELT(Rgids,   l, mkCharOrNA(attr.gene_id));
+        SET_STRING_ELT(Rgnames, l, mkCharOrNA(attr.gene_name));
+        SET_STRING_ELT(Rtids,   l, mkCharOrNA(attr.transcript_id));
+        SET_STRING_ELT(Rbtypes, l, mkCharOrNA(attr.transcript_type));
+        l++;
+    }
+
     tbx_itr_destroy(itr);
-    
-    //free(seq);
-    free(regchr);
-    free(fnidx);
-    free(reg2);
-    
-    free(chr);
-    free(source);
-    free(ftype);
-    free(score);
-    free(strand);
-    free(phase);
-    free(attrib);
-    
+    itr = NULL;
     free(str.s);
     tbx_destroy(tbx);
-    
-    //if ( reg_idx ) regidx_destroy(reg_idx);
-    if ( hts_close(fp) ) fprintf(stderr, "hts_close returned non-zero status: %s\n", fname);
-    
-    
-    UNPROTECT(1);
-    
-    return Rsources;
+    free(fnidx);
+    if (hts_close(fp) != 0)
+        fprintf(stderr, "hts_close returned non-zero status: %s\n", fname);
+
+    /* Preserve the original return type/order: a pairlist of 9 objects. */
+    SEXP ans = PROTECT(allocList(9));
+    SEXP p = ans;
+    SETCAR(p, Rgids);     p = CDR(p);
+    SETCAR(p, Rtids);     p = CDR(p);
+    SETCAR(p, Rfstarts);  p = CDR(p);
+    SETCAR(p, Rfends);    p = CDR(p);
+    SETCAR(p, Rstrands);  p = CDR(p);
+    SETCAR(p, Rsources);  p = CDR(p);
+    SETCAR(p, Rftypes);   p = CDR(p);
+    SETCAR(p, Rgnames);   p = CDR(p);
+    SETCAR(p, Rbtypes);
+
+    UNPROTECT(12); /* 2 inputs + 9 output vectors + ans */
+    return ans;
 }
 
 
+SEXP loadBed(SEXP Rfname, SEXP Rreg)
+{
+    SEXP fnameS = PROTECT(coerceVector(Rfname, STRSXP));
+    SEXP regS   = PROTECT(coerceVector(Rreg, STRSXP));
 
+    if (XLENGTH(fnameS) < 1 || XLENGTH(regS) < 1 ||
+        STRING_ELT(fnameS, 0) == NA_STRING || STRING_ELT(regS, 0) == NA_STRING) {
+        UNPROTECT(2);
+        return R_NilValue;
+    }
 
+    const char *fname = CHAR(STRING_ELT(fnameS, 0));
+    const char *reg   = CHAR(STRING_ELT(regS, 0));
+    verbose = 0;
 
+    htsFile *fp = hts_open(fname, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "Could not read tabixed file %s\n", fname);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
 
+    size_t fnidx_len = strlen(fname) + 5;
+    char *fnidx = (char *)calloc(fnidx_len, 1);
+    if (fnidx == NULL) {
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+    snprintf(fnidx, fnidx_len, "%s.tbi", fname);
 
-
-
-
-SEXP loadBed(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfstarts, SEXP Rfends, SEXP Rstrands, SEXP Rgids, SEXP Rgnames, SEXP Rtids, SEXP Rbtypes){
-    
-    Rfname = coerceVector(Rfname, STRSXP);
-    Rreg   = coerceVector(Rreg,   STRSXP);
-    
-    const char* fname; fname = CHAR(STRING_ELT(Rfname, 0));
-    const char* reg;   reg   = CHAR(STRING_ELT(Rreg, 0));
-    
-    verbose=0;
-    
-    char* regchr; regchr=(char*)calloc(1000, sizeof(char));
-    int regstart, regend;
-    sscanf(reg, "%[^:]:%d-%d", regchr, &regstart, &regend);
-    if(verbose>0){ fprintf(stderr, "Reg=%s\n", reg); }
-    int i, k;
-    htsFile *fp = hts_open(fname,"r");
-    if ( !fp ) fprintf(stderr, "Could not read tabixed file %s\n", fname);
-    
-    char *fnidx = calloc(strlen(fname) + 5, 1);
-    strcat(strcpy(fnidx, fname), ".tbi");
-    
     tbx_t *tbx = tbx_index_load(fnidx);
-    if ( !tbx ) fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
-    
-    kstring_t str = {0,0,0};
-    
+    if (tbx == NULL) {
+        fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    kstring_t str = {0, 0, NULL};
     hts_itr_t *itr = tbx_itr_querys(tbx, reg);
-    
-    int gstart=270000000, gend=0;
-    char* chr;    chr   =(char*)calloc(1000, sizeof(char));
-    int fstart;
-    int fend;
-    char* attrib; //attrib=(char*)calloc(1000, sizeof(char));
-    int nchar;
-    int nfeature=0; // n of rows
-    
-    int ncol=0; // n of extra columns in the bed file
-    //int* vartype;// 0: char;  1: color;  2: double;  3: int;
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        sscanf(str.s, "%[^\t]\t%d\t%d%n", chr, &fstart, &fend, &nchar);
-        attrib = str.s+nchar;
-        // count ncol
-        if(nfeature==0){
-            if(attrib[0]=='\t'){for(k=0; k<strlen(attrib); k++){if(attrib[k]=='\t'){ncol++;}}}
-            //if(ncol>0){vartype = (int*)calloc(ncol, sizeof(int));}
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for region %s\n", reg);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    char chr[1000];
+    int fstart = 0, fend = 0, nchar = 0;
+    int nfeature = 0;
+    int ncol = 0;
+
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        int nr = sscanf(str.s, "%999[^\t]\t%d\t%d%n", chr, &fstart, &fend, &nchar);
+        if (nr != 3) continue;
+
+        if (nfeature == 0) {
+            char *attrib = str.s + nchar;
+            if (*attrib == '\t') {
+                char *q;
+                for (q = attrib; *q != '\0'; q++)
+                    if (*q == '\t') ncol++;
+            }
         }
         nfeature++;
     }
     tbx_itr_destroy(itr);
-    
-    if(verbose>0){fprintf(stderr, "\nN of features = %d\n\n", nfeature);}
-    
-    if(nfeature==0){return R_NilValue;}
-    
-    // #
-    // #  load bed
-    // #
+    itr = NULL;
+
+    if (verbose > 0) fprintf(stderr, "N of features = %d\n", nfeature);
+
+    if (nfeature == 0) {
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
     SEXP Rfstarts = PROTECT(allocVector(INTSXP, nfeature));
     SEXP Rfends   = PROTECT(allocVector(INTSXP, nfeature));
-    SEXP Raddcol  = PROTECT(allocVector(STRSXP, nfeature));
-    
+    SEXP Raddcol  = R_NilValue;
+    if (ncol > 0)
+        Raddcol = PROTECT(allocVector(STRSXP, nfeature));
+
     itr = tbx_itr_querys(tbx, reg);
-    
-    int l=0;
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        sscanf(str.s, "%[^\t]\t%d\t%d%n", chr, &fstart, &fend, &nchar);
-        
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for region %s\n", reg);
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(ncol > 0 ? 5 : 4);
+        return R_NilValue;
+    }
+
+    int l = 0;
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        int nr = sscanf(str.s, "%999[^\t]\t%d\t%d%n", chr, &fstart, &fend, &nchar);
+        if (nr != 3) continue;
+        if (l >= nfeature) break;
+
         INTEGER(Rfstarts)[l] = fstart;
         INTEGER(Rfends)[l]   = fend;
-        if(ncol>0){
-            attrib = str.s+nchar+1;
+
+        if (ncol > 0) {
+            char *attrib = str.s + nchar;
+            if (*attrib == '\t') attrib++;
             SET_STRING_ELT(Raddcol, l, mkChar(attrib));
         }
         l++;
     }
-    UNPROTECT(3);
-    
-    if(ncol>0){
-        return CONS(Rfstarts, CONS(Rfends, CONS(Raddcol, R_NilValue)));
+
+    tbx_itr_destroy(itr);
+    free(str.s);
+    tbx_destroy(tbx);
+    free(fnidx);
+    if (hts_close(fp) != 0)
+        fprintf(stderr, "hts_close returned non-zero status: %s\n", fname);
+
+    int nout = ncol > 0 ? 3 : 2;
+    SEXP ans = PROTECT(allocList(nout));
+    SEXP p = ans;
+    SETCAR(p, Rfstarts); p = CDR(p);
+    SETCAR(p, Rfends);
+    if (ncol > 0) {
+        p = CDR(p);
+        SETCAR(p, Raddcol);
     }
-    return CONS(Rfstarts, CONS(Rfends, R_NilValue));
+
+    UNPROTECT(ncol > 0 ? 6 : 5); /* inputs + output vectors + ans */
+    return ans;
 }
 
 
+SEXP tabix2charmat(SEXP Rfname, SEXP Rreg)
+{
+    SEXP fnameS = PROTECT(coerceVector(Rfname, STRSXP));
+    SEXP regS   = PROTECT(coerceVector(Rreg, STRSXP));
 
+    if (XLENGTH(fnameS) < 1 || XLENGTH(regS) < 1 ||
+        STRING_ELT(fnameS, 0) == NA_STRING || STRING_ELT(regS, 0) == NA_STRING) {
+        UNPROTECT(2);
+        return R_NilValue;
+    }
 
+    const char *fname = CHAR(STRING_ELT(fnameS, 0));
+    const char *reg   = CHAR(STRING_ELT(regS, 0));
+    verbose = 0;
 
+    htsFile *fp = hts_open(fname, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "Could not read tabixed file %s\n", fname);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
 
+    size_t fnidx_len = strlen(fname) + 5;
+    char *fnidx = (char *)calloc(fnidx_len, 1);
+    if (fnidx == NULL) {
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+    snprintf(fnidx, fnidx_len, "%s.tbi", fname);
 
-
-
-
-
-SEXP tabix2charmat(SEXP Rfname, SEXP Rreg){//, SEXP Rsources, SEXP Rftypes, SEXP Rfstarts, SEXP Rfends, SEXP Rstrands, SEXP Rgids, SEXP Rgnames, SEXP Rtids, SEXP Rbtypes){
-    
-    Rfname = coerceVector(Rfname, STRSXP);
-    Rreg   = coerceVector(Rreg,   STRSXP);
-    
-    const char* fname; fname = CHAR(STRING_ELT(Rfname, 0));
-    const char* reg;   reg   = CHAR(STRING_ELT(Rreg, 0));
-    
-    verbose=0;
-    
-    char* regchr; regchr=(char*)calloc(1000, sizeof(char));
-    int regstart, regend;
-    sscanf(reg, "%[^:]:%d-%d", regchr, &regstart, &regend);
-    if(verbose>0){ fprintf(stderr, "Reg=%s\n", reg); }
-    int i, k;
-    htsFile *fp = hts_open(fname,"r");
-    if ( !fp ) fprintf(stderr, "Could not read tabixed file %s\n", fname);
-    
-    char *fnidx = calloc(strlen(fname) + 5, 1);
-    strcat(strcpy(fnidx, fname), ".tbi");
-    
     tbx_t *tbx = tbx_index_load(fnidx);
-    if ( !tbx ) fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
-    
-    kstring_t str = {0,0,0};
-    
+    if (tbx == NULL) {
+        fprintf(stderr, "Could not load .tbi index of %s\n", fnidx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    kstring_t str = {0, 0, NULL};
     hts_itr_t *itr = tbx_itr_querys(tbx, reg);
-    
-    char* attrib; //attrib=(char*)calloc(1000, sizeof(char));
-    int nchar, nchar1;
-    int nfeature=0; // n of rows
-    
-    int ncol=0; // n of extra columns in the bed file
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        attrib = str.s;
-        // count ncol
-        if(nfeature==0){
-            for(k=0; k<strlen(attrib); k++){if(attrib[k]=='\t'){ncol++;}}
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for region %s\n", reg);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    int nfeature = 0;
+    int ncol = 0;
+
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        if (nfeature == 0) {
+            char *q;
+            for (q = str.s; *q != '\0'; q++)
+                if (*q == '\t') ncol++;
         }
         nfeature++;
     }
     tbx_itr_destroy(itr);
-    
-    if(verbose>0){fprintf(stderr, "\nDim = %d x %d\n\n", nfeature, ncol+1);}
-    
-    if(nfeature==0){return R_NilValue;}
-    
-    // #
-    // #  load bed
-    // #
-    SEXP Raddcol  = PROTECT(allocVector(STRSXP, nfeature*(ncol+1)));
-    SEXP Rdim     = PROTECT(allocVector(INTSXP, 2));
+    itr = NULL;
+
+    if (verbose > 0) fprintf(stderr, "Dim = %d x %d\n", nfeature, ncol + 1);
+
+    if (nfeature == 0) {
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(2);
+        return R_NilValue;
+    }
+
+    int total_cols = ncol + 1;
+    SEXP Raddcol = PROTECT(allocVector(STRSXP, (R_xlen_t)nfeature * total_cols));
+    SEXP Rdim    = PROTECT(allocVector(INTSXP, 2));
     INTEGER(Rdim)[0] = nfeature;
-    INTEGER(Rdim)[1] = ncol+1;
-    
+    INTEGER(Rdim)[1] = total_cols;
+
     itr = tbx_itr_querys(tbx, reg);
-    
-    int l=0;
-    char* val; val=(char*)calloc(100000, sizeof(char));
-    while (tbx_itr_next(fp, tbx, itr, &str) >= 0){
-        nchar=0;
-        //fprintf(stderr, "%s\n", str.s);
-        for(i=0; i<ncol; i++){
-            // bug fixed
-            if(str.s[nchar]=='\t'){
-                 nchar1=1;
-                 val[0]='\0';
-            }else{
-                 sscanf(str.s+nchar, "%[^\t]%*1[\t]%n", val, &nchar1);
+    if (itr == NULL) {
+        fprintf(stderr, "Could not create tabix iterator for region %s\n", reg);
+        free(str.s);
+        tbx_destroy(tbx);
+        free(fnidx);
+        hts_close(fp);
+        UNPROTECT(4); /* 2 inputs + Raddcol + Rdim */
+        return R_NilValue;
+    }
+
+    R_xlen_t l = 0;
+    while (tbx_itr_next(fp, tbx, itr, &str) >= 0) {
+        char *field = str.s;
+        int c;
+
+        for (c = 0; c < total_cols; c++) {
+            char *tab = strchr(field, '\t');
+
+            if (tab != NULL && c < total_cols - 1) {
+                char saved = *tab;
+                *tab = '\0';
+                SET_STRING_ELT(Raddcol, l++, mkChar(field));
+                *tab = saved;
+                field = tab + 1;
+            } else {
+                SET_STRING_ELT(Raddcol, l++, mkChar(field));
+                field += strlen(field);
             }
-            if(verbose>0){fprintf(stderr, "%d [%s] len=%d pos=%d\n", i, val, nchar1, nchar);}
-            SET_STRING_ELT(Raddcol, l, mkChar(val));
-            nchar += nchar1;
-            l++;
         }
-        if(str.s[nchar]=='\n'||str.s[nchar]=='\0'){
-            nchar1=1;
-            val[0]='\0';
-        }else{
-            sscanf(str.s+nchar, "%[^\n]\n%n", val, &nchar);
-        }
-        SET_STRING_ELT(Raddcol, l, mkChar(val));
-        l++;
     }
-    UNPROTECT(2);
-    
-    if(ncol>0){
-        //return CONS(Rdim, R_NilValue);
-        return CONS(Rdim, CONS(Raddcol, R_NilValue));
-    }
-    return R_NilValue;
+
+    tbx_itr_destroy(itr);
+    free(str.s);
+    tbx_destroy(tbx);
+    free(fnidx);
+    if (hts_close(fp) != 0)
+        fprintf(stderr, "hts_close returned non-zero status: %s\n", fname);
+
+    /* Preserve the original return type/order: pairlist(Rdim, Raddcol). */
+    SEXP ans = PROTECT(allocList(2));
+    SEXP p = ans;
+    SETCAR(p, Rdim); p = CDR(p);
+    SETCAR(p, Raddcol);
+
+    UNPROTECT(5); /* 2 inputs + Raddcol + Rdim + ans */
+    return ans;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
